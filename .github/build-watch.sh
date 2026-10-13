@@ -130,7 +130,7 @@ unset SDKROOT BINDGEN_EXTRA_CLANG_ARGS IPHONEOS_DEPLOYMENT_TARGET
 
 signing=(CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= DEBUG_INFORMATION_FORMAT=dwarf-with-dsym)
 xcodebuild archive -project LiveContainer.xcodeproj -scheme LiveContainer \
-    -configuration Release -sdk iphoneos -arch arm64 -destination 'generic/platform=iOS' \
+    -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' ARCHS=arm64 \
     -archivePath "$work/LiveContainer.xcarchive" -derivedDataPath "$work/host-derived" \
     -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
     "${signing[@]}" "MARKETING_VERSION=$(value host version)" \
@@ -142,7 +142,7 @@ xcodebuild archive -project LiveContainer.xcodeproj -scheme LiveContainer \
 (
     cd "$ss"
     make build SCHEME=SideStore CONFIGURATION=Release BUILD_CONFIG=Release \
-        COMMON_BUILD_SETTINGS="-project AltStore.xcodeproj -scheme SideStore -sdk iphoneos -configuration Release -arch arm64 -destination generic/platform=iOS -derivedDataPath $work/sidestore-derived -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= DEBUG_INFORMATION_FORMAT=dwarf-with-dsym DEVELOPMENT_TEAM=XYZ0123456 ORG_IDENTIFIER=com.SideStore ENABLE_USER_SCRIPT_SANDBOXING=NO"
+        COMMON_BUILD_SETTINGS="-project AltStore.xcodeproj -scheme SideStore -sdk iphoneos -configuration Release -destination generic/platform=iOS ARCHS=arm64 -derivedDataPath $work/sidestore-derived -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= DEBUG_INFORMATION_FORMAT=dwarf-with-dsym DEVELOPMENT_TEAM=XYZ0123456 ORG_IDENTIFIER=com.SideStore ENABLE_USER_SCRIPT_SANDBOXING=NO"
 ) 2>&1 | tee "$logs/sidestore.log"
 # SideStore README/AGENTS restrictions: prove original tracked source/config/lockfile survived.
 git -C "$ss" diff --exit-code -- . ':!Dependencies/minimuxer'

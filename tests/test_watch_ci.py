@@ -130,5 +130,15 @@ make() { record_environment sidestore; }
         self.assertIn('UUID mismatch', text)
 
 
+    def test_generic_ios_destination_has_no_duplicate_arch_argument(self):
+        text = (ROOT / '.github/build-watch.sh').read_text()
+        host = text.split('xcodebuild archive -project LiveContainer.xcodeproj', 1)[1].split('tee "$logs/livecontainer.log"', 1)[0]
+        side = text.split('COMMON_BUILD_SETTINGS=', 1)[1].split('\n', 1)[0]
+        for command in (host, side):
+            self.assertNotIn('-arch arm64', command)
+            self.assertIn('ARCHS=arm64', command)
+            self.assertIn('-destination', command)
+
+
 if __name__ == '__main__':
     unittest.main()
