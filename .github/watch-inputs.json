@@ -1,0 +1,46 @@
+{
+  "channel": "beta",
+  "host": {
+    "repository": "https://github.com/Andris73/LiveContainer.git",
+    "primary_upstream": "https://github.com/LiveContainerMirror/LiveContainer",
+    "branch": "watch-combined",
+    "base_revision": "4dbe0f9a626de801184a42c0be8d2cb105058e3d",
+    "version": "3.8.11",
+    "build": "381101"
+  },
+  "sidestore": {
+    "repository": "https://github.com/Andris73/SideStore.git",
+    "revision": "a86f42b1d6d4eb57da0e48a1ce214191ba424f3c"
+  },
+  "minimuxer": {
+    "repository": "https://github.com/Andris73/minimuxer.git",
+    "revision": "2a20ddafdeb96ece8176d4600d8719360e27d8b2"
+  },
+  "sidesign": {
+    "repository": "https://github.com/Andris73/SideSign.git",
+    "revision": "e580ddc3a0e69699b570aba63bf614b1a2d532bc"
+  },
+  "openssl": {
+    "repository": "https://github.com/krzyzanowskim/OpenSSL.git",
+    "revision": "623c84da314e85363236507ca38a4bde65df21c3",
+    "source_version": "3.3.3",
+    "source_url": "https://github.com/openssl/openssl/releases/download/openssl-3.3.3/openssl-3.3.3.tar.gz",
+    "source_sha256": "712590fd20aaa60ec75d778fe5b810d6b829ca7fb1e530577917a131f9105539"
+  },
+  "litehook": {
+    "repository": "https://github.com/LiveContainerMirror/litehook.git",
+    "revision": "a7e9f599d7f0b3d77008ad62bf10cb10dab6eca9"
+  },
+  "idevice": {
+    "repository": "https://github.com/Andris73/idevice.git",
+    "revision": "ffed7c7670c9f9401c5cbbe640bee17f951e40e7",
+    "release": "v0.1.68-ss-cp229e",
+    "binary_sha256": "69fc85b29eea6d593b6f917e1b54023d825ae6b4e1b5a1f920057bc54f27fbae"
+  },
+  "rust": {"version": "1.90.0", "target": "aarch64-apple-ios"},
+  "xcode": {
+    "version": "26.2",
+    "build": "17C52",
+    "developer_dir": "/Applications/Xcode_26.2.app/Contents/Developer"
+  }
+}
