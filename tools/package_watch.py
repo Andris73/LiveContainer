@@ -89,7 +89,8 @@ def macho_info(path, expected_types=(2, 6, 8, 10)):
                 raise ValueError('truncated deployment command')
             if command == 0x32 and struct.unpack_from('<I', data, position + 8)[0] != 2:
                 raise ValueError('not an iOS device binary')
-            if command in (0x25, 0x2f, 0x30):
+            # LC_VERSION_MIN_IPHONEOS is 0x25; 0x24 is the macOS variant.
+            if command in (0x24, 0x2f, 0x30):
                 raise ValueError('unsupported native platform')
             packed = struct.unpack_from('<I', data, position + (12 if command == 0x32 else 8))[0]
             minimum = f'{packed >> 16}.{(packed >> 8) & 255}.{packed & 255}'

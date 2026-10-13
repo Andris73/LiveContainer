@@ -88,6 +88,25 @@ def snapshot(root):
 
 
 class PackageTests(unittest.TestCase):
+    def test_macho_info_accepts_legacy_iphoneos_deployment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / 'native'
+            commands = (struct.pack('<4I', 0x25, 16, 0x110203, 0x120000)
+                        + struct.pack('<II16s', 0x1b, 24, bytes([1]) * 16))
+            path.write_bytes(struct.pack('<8I', 0xfeedfacf, 0x100000c, 0, 2, 2, len(commands), 0x85, 0) + commands)
+            self.assertEqual(package.macho_info(path)['minimum_os'], '17.2.3')
+
+    def test_macho_info_rejects_non_iphoneos_legacy_deployment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / 'native'
+            for command in (0x24, 0x2f, 0x30):
+                with self.subTest(command=command):
+                    commands = (struct.pack('<4I', command, 16, 0x110000, 0x120000)
+                                + struct.pack('<II16s', 0x1b, 24, bytes([1]) * 16))
+                    path.write_bytes(struct.pack('<8I', 0xfeedfacf, 0x100000c, 0, 2, 2, len(commands), 0x85, 0) + commands)
+                    with self.assertRaisesRegex(ValueError, 'unsupported native platform'):
+                        package.macho_info(path)
+
     def test_private_stage_is_canonical_under_aliased_output_parent(self):
         with tempfile.TemporaryDirectory() as directory:
             real = pathlib.Path(directory).resolve() / 'real'
