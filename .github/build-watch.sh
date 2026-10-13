@@ -171,7 +171,39 @@ unzip -t "$ss/SideStore.xcarchive/Products/Applications/SideStore.app/SideBackup
 [[ -d "$ss/build/sidebackup.xcarchive/dSYMs/SideBackup.app.dSYM" ]] || fail 'SideBackup dSYM missing'
 ditto "$ss/build/sidebackup.xcarchive" "$work/SideBackup.xcarchive"
 python3 - "$work/LiveContainer.xcarchive" "$ss/SideStore.xcarchive" "$work/SideBackup.xcarchive" <<'ARCHIVES'
-import pathlib, plistlib, re, subprocess, sys
+import hashlib, pathlib, plistlib, re, shutil, stat, subprocess, sys
+
+# SideBackup is a scheme dependency installed alongside SideStore by Xcode.
+# The Makefile also copies that same product into the dedicated helper archive.
+# Remove only a proven identical duplicate from the unsigned archive, never source.
+def inventory(root):
+    if root.is_symlink() or not root.is_dir():
+        raise SystemExit(f'Invalid native helper root: {root}')
+    result = {'.': ('directory', stat.S_IMODE(root.lstat().st_mode))}
+    for item in root.rglob('*'):
+        mode = item.lstat().st_mode
+        if stat.S_ISDIR(mode):
+            value = ('directory', stat.S_IMODE(mode))
+        elif stat.S_ISREG(mode):
+            value = ('file', stat.S_IMODE(mode), hashlib.sha256(item.read_bytes()).hexdigest())
+        else:
+            raise SystemExit(f'Unsupported helper product type: {item}')
+        result[item.relative_to(root).as_posix()] = value
+    return result
+
+pending_duplicate = None
+side_archive = pathlib.Path(sys.argv[2])
+helper_archive = pathlib.Path(sys.argv[3])
+side_apps = side_archive / 'Products/Applications'
+entries = {p.name for p in side_apps.iterdir()}
+if entries == {'SideStore.app', 'SideBackup.app'}:
+    duplicate = side_apps / 'SideBackup.app'
+    original = helper_archive / 'Products/Applications/SideBackup.app'
+    if inventory(duplicate) != inventory(original):
+        raise SystemExit('Installed SideBackup differs from authenticated native helper')
+    pending_duplicate = duplicate
+elif entries != {'SideStore.app'}:
+    raise SystemExit('Unexpected SideStore archive application topology')
 
 def uuids(path):
     output = subprocess.check_output(['xcrun', 'dwarfdump', '--uuid', str(path)], text=True)
@@ -183,6 +215,8 @@ def uuids(path):
 for path in sys.argv[1:]:
     archive = pathlib.Path(path)
     apps = list((archive / 'Products/Applications').glob('*.app'))
+    if archive == side_archive and pending_duplicate is not None:
+        apps = [app for app in apps if app != pending_duplicate]
     if len(apps) != 1:
         raise SystemExit(f'Expected exactly one native app: {archive}')
     app = apps[0]
@@ -195,6 +229,9 @@ for path in sys.argv[1:]:
     if uuids(executable) != uuids(dsym):
         raise SystemExit(f'Executable/dSYM UUID mismatch: {app}')
     print(f'Validated arm64 executable and matching dSYM: {app.name}')
+if pending_duplicate is not None:
+    shutil.rmtree(pending_duplicate)
+    print('Normalized identical native SideBackup scheme-dependency duplicate')
 ARCHIVES
 tar -czf "$out/LiveContainer.xcarchive.tar.gz" -C "$work" LiveContainer.xcarchive
 tar -czf "$out/SideStore.xcarchive.tar.gz" -C "$ss" SideStore.xcarchive

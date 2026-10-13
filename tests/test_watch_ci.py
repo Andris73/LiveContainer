@@ -130,6 +130,49 @@ make() { record_environment sidestore; }
         self.assertIn('UUID mismatch', text)
 
 
+    def test_native_archive_duplicate_helper_is_verified_before_normalization(self):
+        text = (ROOT / '.github/build-watch.sh').read_text()
+        code = text.split("<<'ARCHIVES'\n", 1)[1].split('\nARCHIVES', 1)[0]
+        # Run the actual archive gate; stub dwarfdump, not filesystem validation.
+        for case in ('matching', 'different', 'unknown', 'root-mode', 'file-mode', 'empty-directory', 'missing', 'symlink'):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                import plistlib
+                root = Path(directory)
+                archives = [root / (name + '.xcarchive') for name in ('LiveContainer', 'SideStore', 'SideBackup')]
+                for archive, name in zip(archives, ('LiveContainer', 'SideStore', 'SideBackup')):
+                    app = archive / 'Products/Applications' / (name + '.app')
+                    app.mkdir(parents=True)
+                    (app / name).write_bytes(b'native-code')
+                    (app / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable': name}))
+                    (archive / 'dSYMs' / (name + '.app.dSYM')).mkdir(parents=True)
+                import shutil
+                duplicate = archives[1] / 'Products/Applications/SideBackup.app'
+                shutil.copytree(archives[2] / 'Products/Applications/SideBackup.app', duplicate)
+                if case == 'different':
+                    (duplicate / 'SideBackup').write_bytes(b'not-the-native-helper')
+                if case == 'unknown':
+                    (archives[1] / 'Products/Applications/Unexpected.app').mkdir()
+                if case == 'root-mode':
+                    duplicate.chmod(0o700)
+                    (archives[2] / 'Products/Applications/SideBackup.app').chmod(0o755)
+                if case == 'file-mode':
+                    (duplicate / 'SideBackup').chmod(0o700)
+                if case == 'empty-directory':
+                    (duplicate / 'extra').mkdir()
+                if case == 'missing':
+                    (duplicate / 'SideBackup').unlink()
+                if case == 'symlink':
+                    (duplicate / 'SideBackup').unlink()
+                    (duplicate / 'SideBackup').symlink_to('Info.plist')
+                prefix = "import subprocess\nsubprocess.check_output = lambda *a, **k: 'UUID: 11111111-1111-1111-1111-111111111111 (arm64)'\n"
+                result = subprocess.run(['python3', '-c', prefix + code, *map(str, archives)], capture_output=True, text=True)
+                if case == 'matching':
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertFalse(duplicate.exists())
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertTrue(duplicate.exists(), 'failure must leave archive untouched')
+
     def test_generic_ios_destination_has_no_duplicate_arch_argument(self):
         text = (ROOT / '.github/build-watch.sh').read_text()
         host = text.split('xcodebuild archive -project LiveContainer.xcodeproj', 1)[1].split('tee "$logs/livecontainer.log"', 1)[0]
