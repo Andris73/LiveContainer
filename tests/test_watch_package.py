@@ -88,6 +88,21 @@ def snapshot(root):
 
 
 class PackageTests(unittest.TestCase):
+    def test_private_stage_is_canonical_under_aliased_output_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            real = pathlib.Path(directory).resolve() / 'real'
+            real.mkdir()
+            alias = real.parent / 'alias'
+            alias.symlink_to(real, target_is_directory=True)
+            host, side, backup = fixture(real)
+            before = snapshot(real)
+            result = self.assemble(alias, host, side, backup)
+            self.assertTrue((result / 'LCWatchBuild.json').is_file())
+            self.assertEqual(before, {key: value for key, value in snapshot(real).items()
+                                      if not key.startswith('output/')})
+            self.assertFalse(list(real.glob('.watch-package-*')))
+            self.assertFalse((real / '.output.reserved').exists())
+
     def assemble(self, root, host, side, backup):
         self.assertIn('backup_archive', __import__('inspect').signature(package.assemble).parameters, 'native helper archive must be authenticated')
         return package.assemble(host, side, root / 'output', {'host': {'version': '3.8.11', 'build': '381101'}}, 'f' * 40, backup_archive=backup)

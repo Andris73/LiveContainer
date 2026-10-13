@@ -294,7 +294,10 @@ def assemble(host, side, output, inputs, revision, backup_archive=None):
     reservation.mkdir()  # Exclusive reservation, including competing assemblers.
     stage = None
     try:
-        stage = pathlib.Path(tempfile.mkdtemp(prefix='.watch-package-', dir=output.parent))
+        # macOS temporary roots can spell /private/var as /var. Canonicalize
+        # our newly owned staging directory, not the supplied native trees;
+        # namespace_host_openssl still rejects symlink roots/ancestors/content.
+        stage = pathlib.Path(tempfile.mkdtemp(prefix='.watch-package-', dir=output.parent)).resolve(strict=True)
         host_info = check_source(host, 'com.kdt.livecontainer', 'LiveContainer')
         side_info = check_source(side, 'com.SideStore.SideStore', 'SideStore')
         validate_products(host)

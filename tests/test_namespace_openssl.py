@@ -76,6 +76,8 @@ class NativePatch:
 
 
 def host(root):
+    # Match the caller's canonical private staging path on macOS (/var alias).
+    root = root.resolve()
     app = root / 'Host.app'
     framework = app / 'Frameworks/OpenSSL.framework'
     framework.mkdir(parents=True)
@@ -94,6 +96,24 @@ def host(root):
 
 
 class NamespaceTests(unittest.TestCase):
+    def test_rejects_symlink_root_and_parent_before_native_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp).resolve()
+            app = host(root / 'real')
+            alias = root / 'alias'
+            alias.symlink_to(app.parent, target_is_directory=True)
+            linked_app = root / 'linked.app'
+            linked_app.symlink_to(app, target_is_directory=True)
+            before = {p: p.read_bytes() for p in app.rglob('*') if p.is_file()}
+            for path in (linked_app, alias / app.name):
+                with self.subTest(path=path):
+                    patch = NativePatch()
+                    implementation = module()
+                    with self.assertRaisesRegex(implementation.NamespaceError, 'real private directory'):
+                        implementation.namespace_host_openssl(path, runner=patch)
+                    self.assertEqual(patch.calls, [])
+                    self.assertEqual(before, {p: p.read_bytes() for p in app.rglob('*') if p.is_file()})
+
     def test_rejects_unsafe_inventory_before_mutation(self):
         cases = {
             'fat': lambda app: (app / 'Frameworks/ZSign.dylib').write_bytes(b'\xca\xfe\xba\xbe' + bytes(100)),
@@ -236,7 +256,7 @@ class NamespaceTests(unittest.TestCase):
                 original = host(pathlib.Path(tmp) / 'immutable')
                 (original / 'Host').write_bytes(image(kind=kind))
                 before = {p.relative_to(original): p.read_bytes() for p in original.rglob('*') if p.is_file()}
-                staged = pathlib.Path(tmp) / 'staged.app'
+                staged = pathlib.Path(tmp).resolve() / 'staged.app'
                 shutil.copytree(original, staged)
                 patch = NativePatch()
                 report = module().namespace_host_openssl(staged, runner=patch)
