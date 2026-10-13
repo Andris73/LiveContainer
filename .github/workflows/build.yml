@@ -1,144 +1,60 @@
-name: Xcode - Build
+name: Watch beta native archives
 
-on: 
+on:
   push:
-  pull_request:
+    branches: [watch-combined]
   workflow_dispatch:
-    inputs: 
-      release__nightly:
-        description: Create a nightly release
-        type: boolean
-        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: watch-native-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build using xcodebuild command
-    runs-on: macos-latest
+  config-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest discover -s tests -p test_watch_ci.py -v
+      - run: bash -n .github/build-watch.sh
+
+  native-build:
+    needs: config-tests
+    runs-on: macos-15
+    timeout-minutes: 90
     env:
-      scheme: LiveContainer
-      archive_path: archive
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
     outputs:
-      scheme: ${{ steps.scheme.outputs.scheme }}
-      archive_path: ${{ env.archive_path }}
-      artifact: ${{ env.scheme }}.ipa
-      artifact2: ${{ env.scheme }}+SideStore.ipa
+      artifact: ${{ steps.native.outputs.artifact }}
+      host_archive: ${{ steps.native.outputs.host_archive }}
+      sidestore_archive: ${{ steps.native.outputs.sidestore_archive }}
     steps:
-      - uses: maxim-lobanov/setup-xcode@v1
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          xcode-version: '26.2'
-      - name: Checkout
-        uses: actions/checkout@v6
+          fetch-depth: 0
+          submodules: false
+          persist-credentials: false
+      - name: Compile pinned native sources (unsigned, not combined)
+        id: native
+        run: bash .github/build-watch.sh
+      - name: Upload native archives and source provenance for later packaging
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          submodules: recursive
-      - name: Set Scheme
-        id: scheme
-        run: |
-          if [ $scheme = default ]
-          then
-            scheme_list=$(xcodebuild -list -json | tr -d "\n")
-            scheme=$(echo $scheme_list | ruby -e "require 'json'; puts JSON.parse(STDIN.gets)['project']['targets'][0]")
-            echo Using default scheme: $scheme
-          else
-            echo Using configured scheme: $scheme
-          fi
-          echo "scheme=$scheme" >> $GITHUB_OUTPUT
-      - name: Set filetype_parameter
-        id: filetype_parameter
-        run: |
-          filetype_parameter=`ls -A | grep -i \\.xcworkspace\$ && echo workspace || echo project`
-          echo "filetype_parameter=$filetype_parameter" >> $GITHUB_OUTPUT
-      - name: Set file_to_build
-        id: file_to_build
-        run: |
-          file_to_build=`ls -A | grep -i \\.xcworkspace\$ || ls -A | grep -i \\.xcodeproj\$`
-          file_to_build=`echo $file_to_build | awk '{$1=$1;print}'`
-          echo "file_to_build=$file_to_build" >> $GITHUB_OUTPUT
-      - name: Archive
-        env:
-          scheme: ${{ steps.scheme.outputs.scheme }}
-          filetype_parameter: ${{ steps.filetype_parameter.outputs.filetype_parameter }}
-          file_to_build: ${{ steps.file_to_build.outputs.file_to_build }}
-        run: xcodebuild archive -archivePath "$archive_path" -scheme "$scheme" -"$filetype_parameter" "$file_to_build" -sdk iphoneos -arch arm64 -configuration Release | xcpretty && exit ${PIPESTATUS[0]}
-      - name: Tar Build Artifact
-        run: tar -cvf "$archive_path.xcarchive.tar" "$archive_path.xcarchive"
-      - name: Upload a Build Artifact
-        uses: actions/upload-artifact@v4
+          name: native-watch-beta-${{ github.sha }}-${{ github.run_attempt }}
+          path: native-output/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+      - name: Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ${{ env.archive_path }}.xcarchive.tar
-          path: ${{ env.archive_path }}.xcarchive.tar
-      - name: Create IPA
-        run: |
-          sh .github/build_github.sh
-
-      - name: Upload a Build Artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ env.scheme }}.ipa
-          path: ${{ env.scheme }}.ipa
-      
-      - name: Upload LiveContainer+SideStore
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ env.scheme }}+SideStore.ipa
-          path: ${{ env.scheme }}+SideStore.ipa
-
-  release__nightly:
-    name: Nightly Release
-    permissions:
-      contents: write
-    if: inputs.release__nightly || github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-    runs-on: ubuntu-latest
-    needs: [build]
-    concurrency:
-      group: release__nightly
-      cancel-in-progress: true
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-      - name: Download a Build Artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: ${{ needs.build.outputs.artifact }}
-      - name: Download a Build Artifact2
-        uses: actions/download-artifact@v8
-        with:
-          name: ${{ needs.build.outputs.artifact2 }}
-      - name: Get Commit Info
-        id: commit_info
-        run: |
-          COMMIT_SHA=$(git rev-parse HEAD)
-          COMMIT_MSG=$(git log -1 --pretty=%s)
-          echo "COMMIT_SHA=$COMMIT_SHA" >> $GITHUB_ENV
-          echo "COMMIT_MSG=$COMMIT_MSG" >> $GITHUB_ENV
-      - name: Update AltStore source
-        id: update_source
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NIGHTLY_LINK: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
-          commit_sha: ${{ env.COMMIT_SHA }}
-          commit_msg: ${{ env.COMMIT_MSG }}
-        run: |
-          python .github/update_json.py
-      - name: Nightly Release
-        uses: andelf/nightly-release@5834076edc55cc05975561c9722043f072ac5c26
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with: 
-          body: |
-            **Commit:** [${{ github.sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
-            **Message:** ${{ github.event.head_commit.message }}
-            
-            This is a nightly release [created automatically with GitHub Actions workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}).
-          files: |
-            ${{ needs.build.outputs.artifact }}
-            ${{ needs.build.outputs.artifact2 }}
-            .github/apps_nightly.json
-      - name: Update apps.json in Release 1.0
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: "1.0"
-          files: |
-            .github/apps_ss_lc.json
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: native-watch-beta-logs-${{ github.sha }}-${{ github.run_attempt }}
+          path: native-logs/*
+          if-no-files-found: warn
+          retention-days: 7

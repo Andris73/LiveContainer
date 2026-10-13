@@ -1,0 +1,68 @@
+name: Watch beta package
+
+on:
+  workflow_dispatch:
+    inputs:
+      native_run_id:
+        description: Successful native archive run in this repository
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  package:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      NATIVE_RUN_ID: ${{ inputs.native_run_id }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test package tools
+        run: |
+          python3 -m unittest discover -s tests -v
+          bash -n .github/package-watch.sh
+      - name: Validate native build provenance
+        id: native
+        run: |
+          set -euo pipefail
+          [[ "$NATIVE_RUN_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$NATIVE_RUN_ID" > native-run.json
+          python3 - <<'PY'
+          import json, os, pathlib, re
+          run = json.loads(pathlib.Path('native-run.json').read_text())
+          if run.get('status') != 'completed' or run.get('conclusion') != 'success':
+              raise SystemExit('Native run did not complete successfully')
+          if run.get('path') != '.github/workflows/build.yml' or run.get('head_branch') != 'watch-combined':
+              raise SystemExit('Wrong native workflow or branch')
+          sha = run['head_sha']
+          if not re.fullmatch('[0-9a-f]{40}', sha):
+              raise SystemExit('Invalid native source revision')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f'revision={sha}\nartifact=native-watch-beta-{sha}-{run["run_attempt"]}\n')
+          PY
+      - name: Download matched native archives
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ steps.native.outputs.artifact }}
+          path: native-input
+          run-id: ${{ inputs.native_run_id }}
+          github-token: ${{ github.token }}
+      - name: Combine and verify ad-hoc signing
+        env:
+          NATIVE_REVISION: ${{ steps.native.outputs.revision }}
+        run: bash .github/package-watch.sh "$PWD/native-input" "$PWD/release-output" "$NATIVE_REVISION"
+      - name: Upload verified package candidate (not a public release)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: watch-combined-beta-${{ github.run_id }}
+          path: release-output/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
