@@ -183,6 +183,133 @@ make() { record_environment sidestore; }
             self.assertIn('-destination', command)
 
 
+    def test_openssl_native_archives_replace_template_at_xcframework_boundary(self):
+        # Execute the generated helper; only unavailable Apple/build tools are stubbed.
+        # Markers represent lineage, NOT Mach-O binaries or a successful native build.
+        import hashlib
+        import os
+        import plistlib
+        import sys
+        import tarfile
+        text = (ROOT / '.github/build-watch.sh').read_text()
+        helper = text.split("<<'OPENSSL_SCRIPT'\n", 1)[1].split('\nOPENSSL_SCRIPT', 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            vendor = root / 'vendor'
+            template = vendor / 'Frameworks/iphoneos/OpenSSL.framework'
+            template.mkdir(parents=True)
+            (template / 'OpenSSL').write_bytes(b'PREBUILT-TEMPLATE')
+            (template / 'Info.plist').write_bytes(plistlib.dumps({
+                'CFBundleExecutable': 'OpenSSL', 'MinimumOSVersion': '12.0'}))
+            for name in ('_CodeSignature/CodeResources', 'CodeResources',
+                         'Modules/module.modulemap', 'Headers/shim.h', 'LICENSE'):
+                path = template / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('template metadata: ' + name)
+            source = root / 'source'
+            (source / 'include/openssl').mkdir(parents=True)
+            (source / 'include/openssl/ssl.h').write_text('#include <openssl/crypto.h>\n')
+            (source / 'include/openssl/crypto.h').write_text('/* fresh crypto header */\n')
+            configure = source / 'Configure'
+            configure.write_text('#!/bin/sh\nexec python3 -c '\
+                                 + "'import json,os,sys; json.dump(dict(args=sys.argv[1:], sdk=os.environ.get(\"SDKROOT\"), deployment=os.environ.get(\"IPHONEOS_DEPLOYMENT_TARGET\")),open(\"configuration.json\",\"w\"))' \"$@\"\n")
+            configure.chmod(0o755)
+            archive = root / 'source.tar.gz'
+            with tarfile.open(archive, 'w:gz') as tar:
+                tar.add(source, arcname='openssl-source')
+            tools = root / 'tools'
+            tools.mkdir()
+            stub = tools / 'stub'
+            stub.write_text('#!' + sys.executable + '\n' + r'''
+import json, os, pathlib, plistlib, shutil, sys
+name = pathlib.Path(sys.argv[0]).name
+args = sys.argv[1:]
+log = pathlib.Path(os.environ['HARNESS_LOG'])
+with log.open('a') as f:
+    f.write(json.dumps({'tool': name, 'args': args}) + '\n')
+if name == 'curl':
+    shutil.copyfile(os.environ['HARNESS_ARCHIVE'], args[args.index('-o') + 1])
+elif name == 'sysctl':
+    print('2')
+elif name == 'ditto':
+    shutil.copytree(args[0], args[1], dirs_exist_ok=True)
+elif name == 'make':
+    src = pathlib.Path.cwd()
+    configuration = json.loads((src / 'configuration.json').read_text())
+    if 'build_libs' in args:
+        for library in ('libssl.a', 'libcrypto.a'):
+            (src / library).write_text('FRESH:' + library)
+    elif 'install_dev' in args:
+        prefix = pathlib.Path(next(a.split('=', 1)[1] for a in configuration['args'] if a.startswith('--prefix=')))
+        (prefix / 'lib').mkdir(parents=True)
+        for library in ('libssl.a', 'libcrypto.a'):
+            shutil.copyfile(src / library, prefix / 'lib' / library)
+        shutil.copytree(src / 'include', prefix / 'include')
+    else:
+        raise SystemExit('unexpected make target')
+elif name == 'clang':
+    libraries = [pathlib.Path(a) for a in args if a.endswith('.a')]
+    assert [p.name for p in libraries] == ['libssl.a', 'libcrypto.a']
+    assert all(p.read_text() == 'FRESH:' + p.name for p in libraries)
+    output = pathlib.Path(args[args.index('-o') + 1])
+    output.write_bytes(b'SOURCE-LINKED:' + b'|'.join(p.read_bytes() for p in libraries))
+elif name == 'xcrun':
+    if '--show-sdk-path' in args:
+        print('/fixture/iPhoneOS.sdk')
+    elif '--find' in args:
+        print(pathlib.Path(sys.argv[0]).parent / 'clang')
+    elif args[0] == 'dsymutil':
+        assert pathlib.Path(args[1]).read_bytes().startswith(b'SOURCE-LINKED:')
+        pathlib.Path(args[args.index('-o') + 1]).mkdir()
+    else:
+        raise SystemExit('unexpected xcrun operation')
+elif name == 'xcodebuild':
+    assert args[0] == '-create-xcframework'
+    framework = pathlib.Path(args[args.index('-framework') + 1])
+    assert (framework / 'OpenSSL').read_bytes().startswith(b'SOURCE-LINKED:')
+    output = pathlib.Path(args[args.index('-output') + 1])
+    shutil.copytree(framework, output / 'ios-arm64/OpenSSL.framework')
+else:
+    raise SystemExit('unexpected tool: ' + name)
+''')
+            stub.chmod(0o755)
+            for name in ('curl', 'sysctl', 'ditto', 'make', 'clang', 'xcrun', 'xcodebuild'):
+                (tools / name).symlink_to(stub.name)
+            log = root / 'commands.jsonl'
+            env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ['PATH'],
+                       HARNESS_LOG=str(log), HARNESS_ARCHIVE=str(archive))
+            build = root / 'build'
+            result = subprocess.run(['bash', '-c', helper, 'helper', str(vendor),
+                                     str(build), 'https://fixture.invalid/pinned-source',
+                                     hashlib.sha256(archive.read_bytes()).hexdigest()],
+                                    env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            configuration = json.loads((build / 'src/configuration.json').read_text())
+            self.assertEqual(configuration['deployment'], '17.0', 'OpenSSL must target actual iOS 17')
+            self.assertIn('-miphoneos-version-min=17.0', configuration['args'])
+            self.assertEqual(configuration['sdk'], '/fixture/iPhoneOS.sdk')
+            commands = [json.loads(line) for line in log.read_text().splitlines()]
+            link = next(c['args'] for c in commands if c['tool'] == 'clang')
+            for flag in ('-dynamiclib', '-arch', 'arm64', '-isysroot', '/fixture/iPhoneOS.sdk',
+                         '-miphoneos-version-min=17.0', '-Wl,-all_load',
+                         '-Wl,-headerpad_max_install_names', '-Wl,-no_adhoc_codesign', '-lSystem'):
+                self.assertIn(flag, link)
+            self.assertEqual(link[link.index('-install_name') + 1], '@rpath/OpenSSL.framework/OpenSSL')
+            self.assertEqual([a for a in link if a.endswith('.a')],
+                             [str(build / 'install/lib' / name) for name in ('libssl.a', 'libcrypto.a')])
+            self.assertLess(next(i for i, c in enumerate(commands) if c['tool'] == 'make' and 'install_dev' in c['args']),
+                            next(i for i, c in enumerate(commands) if c['tool'] == 'clang'))
+            expected = b'SOURCE-LINKED:FRESH:libssl.a|FRESH:libcrypto.a'
+            for framework in (build / 'frameworks/OpenSSL.framework', template,
+                              vendor / 'Frameworks/OpenSSL.xcframework/ios-arm64/OpenSSL.framework'):
+                self.assertEqual((framework / 'OpenSSL').read_bytes(), expected)
+                self.assertEqual(plistlib.loads((framework / 'Info.plist').read_bytes())['MinimumOSVersion'], '17.0')
+                self.assertFalse((framework / '_CodeSignature').exists())
+                self.assertFalse((framework / 'CodeResources').exists())
+                for name in ('Modules/module.modulemap', 'Headers/shim.h', 'LICENSE'):
+                    self.assertEqual((framework / name).read_text(), 'template metadata: ' + name)
+                self.assertEqual((framework / 'Headers/ssl.h').read_text(), '#include <OpenSSL/crypto.h>\n')
+
     def test_source_built_openssl_does_not_expect_the_original_vendor_certificate(self):
         text = (ROOT / 'LiveContainer.xcodeproj/project.pbxproj').read_text()
         reference = next(line for line in text.splitlines() if 'OpenSSL.xcframework */ = {isa = PBXFileReference' in line)

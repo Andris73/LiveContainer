@@ -57,18 +57,23 @@ curl --fail --location --silent --show-error --connect-timeout 15 --max-time 300
 printf '%s  %s\n' "$source_sha256" "$build/openssl.tar.gz" | shasum -a 256 -c -
 tar -xzf "$build/openssl.tar.gz" --strip-components=1 -C "$build/src"
 sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
-export SDKROOT="$sdk" IPHONEOS_DEPLOYMENT_TARGET=12.0
+prefix="$build/install"
+export SDKROOT="$sdk" IPHONEOS_DEPLOYMENT_TARGET=17.0
 export CC="$(xcrun --sdk iphoneos --find clang)"
 (
     cd "$build/src"
-    ./Configure ios64-xcrun no-shared no-tests no-asm -g -miphoneos-version-min=12.0
+    ./Configure ios64-xcrun no-shared no-tests no-asm -g -miphoneos-version-min=17.0 \
+        --prefix="$prefix" --libdir=lib
     make -j"$(sysctl -n hw.ncpu)" build_libs
+    make install_dev
 )
 # Keep the pinned framework's module map, shim, resources, notices and bundle layout.
 framework="$build/frameworks/OpenSSL.framework"
 ditto "$source_tree/Frameworks/iphoneos/OpenSSL.framework" "$framework"
-rm -rf "$framework/_CodeSignature"
-python3 - "$build/src/include/openssl" "$framework/Headers" <<'HEADERS'
+rm -rf "$framework/_CodeSignature" "$framework/CodeResources"
+# Never let a copied executable (or its signature) survive the source-link boundary.
+rm -f "$framework/OpenSSL"
+python3 - "$prefix/include/openssl" "$framework/Headers" <<'HEADERS'
 import pathlib, re, sys
 source, destination = map(pathlib.Path, sys.argv[1:])
 destination.mkdir(parents=True, exist_ok=True)
@@ -77,9 +82,21 @@ for header in source.glob('*.h'):
     text = re.sub(r'#\s*include\s*<openssl/', '#include <OpenSSL/', text)
     (destination / header.name).write_text(text)
 HEADERS
-"$CC" -dynamiclib -arch arm64 -isysroot "$sdk" -miphoneos-version-min=12.0 -g \
+# Force both fresh archives into a device dylib, including otherwise unreferenced APIs.
+# Reserve load-command space for later packaging; do not sign this native input.
+"$CC" -dynamiclib -arch arm64 -isysroot "$sdk" -miphoneos-version-min=17.0 -g \
     -install_name @rpath/OpenSSL.framework/OpenSSL -Wl,-all_load \
-    "$build/src/libssl.a" "$build/src/libcrypto.a" -o "$framework/OpenSSL"
+    -Wl,-headerpad_max_install_names -Wl,-no_adhoc_codesign \
+    "$prefix/lib/libssl.a" "$prefix/lib/libcrypto.a" -lSystem -o "$framework/OpenSSL"
+python3 - "$framework/Info.plist" <<'OPENSSL_PLIST'
+import pathlib, plistlib, sys
+path = pathlib.Path(sys.argv[1])
+info = plistlib.loads(path.read_bytes())
+if info.get('CFBundleExecutable') != 'OpenSSL':
+    raise SystemExit('Unexpected OpenSSL framework executable')
+info['MinimumOSVersion'] = '17.0'
+path.write_bytes(plistlib.dumps(info))
+OPENSSL_PLIST
 xcrun dsymutil "$framework/OpenSSL" -o "$build/frameworks/OpenSSL.framework.dSYM"
 # Only the device slice is needed. Replace runner-local generated dependency products, not source.
 rm -rf "$source_tree/Frameworks/OpenSSL.xcframework" "$source_tree/Frameworks/iphoneos/OpenSSL.framework"
