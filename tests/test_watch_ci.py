@@ -140,5 +140,15 @@ make() { record_environment sidestore; }
             self.assertIn('-destination', command)
 
 
+    def test_source_built_openssl_does_not_expect_the_original_vendor_certificate(self):
+        text = (ROOT / 'LiveContainer.xcodeproj/project.pbxproj').read_text()
+        reference = next(line for line in text.splitlines() if 'OpenSSL.xcframework */ = {isa = PBXFileReference' in line)
+        self.assertNotIn('expectedSignature', reference)
+        build = (ROOT / '.github/build-watch.sh').read_text()
+        self.assertIn('source_sha256', build)
+        self.assertIn('shasum -a 256 -c', build)
+        self.assertIn('./Configure ios64-xcrun', build)
+
+
 if __name__ == '__main__':
     unittest.main()
